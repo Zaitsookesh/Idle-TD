@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Clicker + Tower Defense (Phaser)</title>
+  <style>
+    html,body{height:100%;margin:0;background:#111;color:#eee;font-family:system-ui;}
+    #game{width:100%;height:100%;}
+    .hint{position:fixed;left:12px;bottom:12px;opacity:.8;font-size:12px}
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hint">Клик по «монете» (+1 золото). Клик по полю — ставит башню (10 золота).</div>
+
+  <!-- Phaser с CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+  <script>
+    const W = 800, H = 600;
+
+    class MainScene extends Phaser.Scene {
+      constructor(){ super('main'); }
+
+      create(){
+        // UI
+        this.gold = 0;
+        this.hp = 10;
+        this.score = 0;
+
+        this.add.text(16,16,'Clicker + TD',{fontSize: '18px', fill:'#fff'});
+        this.goldText = this.add.text(16,40,'Золото: 0',{fontSize:'16px',fill:'#ffd54a'});
+        this.hpText   = this.add.text(16,64,'HP: 10',{fontSize:'16px',fill:'#66e0a3'});
+        this.scoreText= this.add.text(16,88,'Счёт: 0',{fontSize:'16px',fill:'#9ecbff'});
+
+        // Панель справа под кликер
+        const uiX = W-120, uiY = H-120;
+        this.add.rectangle(W-80, H/2, 2, H, 0x333333).setOrigin(0.5);
+        const coin = this.add.rectangle(W-60, H-60, 90, 90, 0xffc107).setStrokeStyle(3,0x8a6d00);
+        this.add.text(W-105,H-110,'Монета',{fontSize:'14px',fill:'#fff'});
+
+        coin.setInteractive({useHandCursor:true}).on('pointerdown', ()=>{
+          this.gold += 1;
+          this.goldText.setText('Золото: '+this.gold);
+          this.tweens.add({targets: coin, scaleX:0.9, scaleY:0.9, yoyo:true, duration:80});
+        });
+
+        // Группы
+        this.enemies = this.physics.add.group();
+        this.bullets = this.physics.add.group({ collideWorldBounds: false });
+
+        // Путь врагов (простая «змейка»)
+        this.path = [
+          {x: 40, y: 300}, {x: 300, y: 300}, {x: 300, y: 120},
+          {x: 700, y: 120}, {x: 700, y: 520}, {x: 760, y: 520}
+        ];
+        // Нарисуем путь
+        const g = this.add.graphics().lineStyle(2,0x444444,1);
+        g.beginPath(); g.moveTo(this.path[0].x, this.path[0].y);
+        for (let i=1;i<this.path.length;i++) g.lineTo(this.path[i].x,this.path[i].y);
+        g.strokePath();
+
+        // Коллайдер пуль и врагов
+        this.physics.add.overlap(this.bullets, this.enemies, (bullet, enemy)=>{
+          bullet.destroy();
+          enemy.destroy();
+          this.score += 1;
+          this.gold += 2;
+          this.scoreText.setText('Счёт: '+this.score);
+          this.goldText.setText('Золото: '+this.gold);
+        });
+
+        // Спавн волн
+        this.time.addEvent({ delay: 1200, loop: true, callback: ()=> this.spawnEnemy() });
+
+        // Башни
+        this.turrets = [];
+
+        // Ставить башню кликом по полю (кроме панели монеты)
+        this.input.on('pointerdown', (p)=>{
+          const coinBounds = coin.getBounds();
+          if (coinBounds.contains(p.x,p.y) || p.x > W-120) return; // не на панели
+          if (this.gold >= 10){
+            this.placeTurret(p.x, p.y);
+            this.gold -= 10;
+            this.goldText.setText('Золото: '+this.gold);
+          }
+        });
+      }
+
+      spawnEnemy(){
+        const start = this.path[0];
+        const enemy = this.add.rectangle(start.x, start.y, 20, 20, 0xff6b6b);
+        this.physics.add.existing(enemy);
+        enemy.body.setCircle ? enemy.body.setCircle(10) : enemy.body.setSize(20,20);
+        enemy.speed = 60; // px/s
+        enemy.pathIndex = 1;
+        this.enemies.add(enemy);
+
+        // движение по пути
+        enemy.update = () => {
+          if (!enemy.active) return;
+          const target = this.path[enemy.pathIndex];
+          const dx = target.x - enemy.x, dy = target.y - enemy.y;
+          const dist = Math.hypot(dx,dy);
+          if (dist < 2){
+            enemy.pathIndex++;
+            if (enemy.pathIndex >= this.path.length){
+              // дошёл — урон базе
+              enemy.destroy();
+              this.hp -= 1;
+              this.hpText.setText('HP: '+this.hp);
+              if (this.hp <= 0) this.scene.restart();
+              return;
+            }
+          } else {
+            const vx = (dx/dist) * enemy.speed;
+            const vy = (dy/dist) * enemy.speed;
+            enemy.body.setVelocity(vx, vy);
+          }
+        };
+      }
+
+      placeTurret(x,y){
+        const t = this.add.rectangle(x,y,24,24,0x90caf9).setStrokeStyle(2,0x2b79c2);
+        this.physics.add.existing(t);
+        t.range = 180;
+        t.fireDelay = 500; // мс
+        t.lastShot = 0;
+        this.turrets.push(t);
+      }
+
+      fireFrom(turret, enemy){
+        const angle = Phaser.Math.Angle.Between(turret.x, turret.y, enemy.x, enemy.y);
+        const bullet = this.add.rectangle(turret.x, turret.y, 6, 6, 0xffffff);
+        this.physics.add.existing(bullet);
+        const speed = 300;
+        bullet.body.setVelocity(Math.cos(angle)*speed, Math.sin(angle)*speed);
+        this.bullets.add(bullet);
+        this.time.delayedCall(2000, ()=> bullet.destroy()); // авто-дестрой
+      }
+
+      update(time, dt){
+        // обновляем врагов
+        this.enemies.children.iterate(e=> e && e.update && e.update());
+
+        // логика башен: искать цель и стрелять
+        this.turrets.forEach(t=>{
+          if (!t.active) return;
+          // ближайший враг в радиусе
+          let best = null, bestD = Infinity;
+          this.enemies.children.iterate(e=>{
+            if (!e || !e.active) return;
+            const d = Phaser.Math.Distance.Between(t.x,t.y,e.x,e.y);
+            if (d < t.range && d < bestD){ best = e; bestD = d; }
+          });
+          if (best && time - t.lastShot > t.fireDelay){
+            this.fireFrom(t, best);
+            t.lastShot = time;
+          }
+        });
+      }
+    }
+
+    const game = new Phaser.Game({
+      type: Phaser.AUTO,
+      width: W, height: H, backgroundColor: '#121212',
+      parent: 'game',
+      physics: { default: 'arcade', arcade: { debug:false }},
+      scene: [MainScene]
+    });
+  </script>
+</body>
+</html>
